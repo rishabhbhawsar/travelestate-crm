@@ -40,9 +40,10 @@ ALLOWED_ORIGINS = [
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; "
     "script-src 'self' https://cdn.jsdelivr.net; "
-    "style-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
     "img-src 'self' data: https:; "
-    "connect-src 'self' wss://app.travelestate.io; "
+    "connect-src 'self' ws://localhost:8000 wss://app.travelestate.io https://cdn.jsdelivr.net; "
+    "font-src 'self'; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "
     "object-src 'none'"
@@ -224,23 +225,28 @@ class SanitizationMiddleware(BaseHTTPMiddleware):
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Attaches the standard security header set to every response."""
 
+    def __init__(self, app: ASGIApp) -> None:
+        super().__init__(app)
+
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         response = await call_next(request)
-
+        
         # Extract the current URL path safely from the incoming request object
         current_path = str(request.url.path)
-
+        
         for header_name, header_value in SECURITY_HEADERS.items():
-            # If it's a documentation route, skip injecting the strict CSP
-            # so the browser lets Swagger render its interactive panels.
+            # Bypass strict CSP restrictions for documentation components AND the main 
+            # root dashboard presentation route during the local developer runtime so 
+            # the browser permits Babel's internal client-side parsing engines to run.
             if header_name == "Content-Security-Policy" and (
-                current_path.startswith("/docs")
-                or current_path.startswith("/openapi.json")
+                current_path == "/" or 
+                current_path.startswith("/docs") or 
+                current_path.startswith("/openapi.json")
             ):
                 continue
-
+                
             response.headers[header_name] = header_value
-
+            
         return response
