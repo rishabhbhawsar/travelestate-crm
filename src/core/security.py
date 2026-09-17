@@ -224,13 +224,23 @@ class SanitizationMiddleware(BaseHTTPMiddleware):
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Attaches the standard security header set to every response."""
 
-    def __init__(self, app: ASGIApp) -> None:
-        super().__init__(app)
-
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         response = await call_next(request)
-        for header, value in SECURITY_HEADERS.items():
-            response.headers[header] = value
+
+        # Extract the current URL path safely from the incoming request object
+        current_path = str(request.url.path)
+
+        for header_name, header_value in SECURITY_HEADERS.items():
+            # If it's a documentation route, skip injecting the strict CSP
+            # so the browser lets Swagger render its interactive panels.
+            if header_name == "Content-Security-Policy" and (
+                current_path.startswith("/docs")
+                or current_path.startswith("/openapi.json")
+            ):
+                continue
+
+            response.headers[header_name] = header_value
+
         return response
