@@ -4,8 +4,12 @@ const { useState, useEffect, useRef, useMemo, useCallback } = React;
 // Global constants
 // -----------------------------------------------------------------------
 
-const WS_URL = "ws://localhost:8000/ws/dashboard";
-const API_URL = "http://localhost:8000/api/v1/leads";
+// Dynamically read whatever host domain name the user loaded in their browser window
+const HOST_URL = window.location.host; 
+
+const API_URL = `${window.location.protocol}//${HOST_URL}/api/v1/leads`;
+const WS_URL = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${HOST_URL}/ws/dashboard`;
+
 const ROW_HEIGHT = 64;
 const OVERSCAN = 6;
 
