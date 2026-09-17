@@ -216,3 +216,23 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# ==========================================
+# Custom TravelEstate CRM Exclusions
+# ==========================================
+# Exclude local runtime database storage layers
+travelestate.db
+travelestate.db-journal
+travelestate.db-wal
+travelestate.db-shm
+
+# Exclude local environment configurations
+.env
+.env.*
+
+# Exclude compiled Python bytecode modules
+**/__pycache__/
+*.py[cod]
+*$py.class
+

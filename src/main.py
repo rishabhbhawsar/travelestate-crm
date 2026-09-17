@@ -18,6 +18,7 @@ import aiosqlite
 from fastapi import BackgroundTasks, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from src.core.security import ALLOWED_ORIGINS, SanitizationMiddleware, SecurityHeadersMiddleware
 from src.models.schemas import LeadCreate, LeadResponse, LeadStatus
@@ -64,6 +65,8 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+app.mount("/static", StaticFiles(directory="src/static"), name="static")
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(SanitizationMiddleware)

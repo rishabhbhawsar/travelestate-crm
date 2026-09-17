@@ -9,6 +9,7 @@ permitted to implement its own version of any of these.
 
 from __future__ import annotations
 
+import os
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -27,7 +28,7 @@ from src.models.schemas import TokenData
 # Configuration constants
 # ---------------------------------------------------------------------------
 
-SECRET_KEY = "CHANGE_ME_IN_PRODUCTION_ENV_VAR"  # noqa: S105 — load from environment at startup
+SECRET_KEY = os.environ.get("SECRET_KEY", "fallback-insecure-development-key-12345")
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 15
 REFRESH_TOKEN_EXPIRE_DAYS = 7
