@@ -17,6 +17,7 @@ from typing import AsyncIterator
 import aiosqlite
 from fastapi import BackgroundTasks, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from src.core.security import ALLOWED_ORIGINS, SanitizationMiddleware, SecurityHeadersMiddleware
 from src.models.schemas import LeadCreate, LeadResponse, LeadStatus
@@ -186,3 +187,8 @@ async def dashboard_socket(websocket: WebSocket) -> None:
         pass
     finally:
         await hub.disconnect(websocket)
+
+@app.get("/")
+async def serve_dashboard():
+    """Explicit root fallback to deliver the live presentation HTML interface."""
+    return FileResponse("src/static/index.html")
