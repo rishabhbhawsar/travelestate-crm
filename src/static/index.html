@@ -20,7 +20,12 @@
       height: 100%;
       margin: 0;
       background-color: #020617;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
   </style>
 </head>
 <body>
@@ -29,9 +34,9 @@
   <script type="text/babel" data-presets="react">
     const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
-    // ---------------------------------------------------------------------
-    // Configuration
-    // ---------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // Global constants
+    // -----------------------------------------------------------------------
 
     const WS_URL = "ws://localhost:8000/ws/dashboard";
     const API_URL = "http://localhost:8000/api/v1/leads";
@@ -52,35 +57,66 @@
       FAILED: "bg-rose-500/15 text-rose-400",
     };
 
+    // -----------------------------------------------------------------------
+    // Formatting helpers
+    // -----------------------------------------------------------------------
+
     function formatBudget(value) {
-      if (value === null || value === undefined) return "—";
-      return `₹${value.toLocaleString("en-IN")}`;
+      if (value === null || value === undefined) {
+        return "—";
+      }
+      return "₹" + value.toLocaleString("en-IN");
     }
 
-    // ---------------------------------------------------------------------
-    // Presentational primitives
-    // ---------------------------------------------------------------------
+    function formatTimestamp(isoString) {
+      if (!isoString) {
+        return "—";
+      }
+      try {
+        const date = new Date(isoString);
+        return date.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+      } catch (err) {
+        return "—";
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // UrgencyMeter
+    // -----------------------------------------------------------------------
 
     function UrgencyMeter({ score }) {
-      if (!score) return <span className="text-slate-600">—</span>;
+      if (!score) {
+        return <span className="text-slate-600 text-xs">—</span>;
+      }
+
       return (
-        <div className="flex gap-0.5">
+        <div className="flex items-center gap-0.5" title={"Urgency: " + score + "/5"}>
           {[1, 2, 3, 4, 5].map((tier) => (
             <span
               key={tier}
-              className={`h-3 w-1.5 rounded-sm ${
-                tier <= score ? "bg-emerald-500" : "bg-slate-700"
-              }`}
+              className={
+                "h-3 w-1.5 rounded-sm transition-colors duration-300 " +
+                (tier <= score ? "bg-emerald-500" : "bg-slate-700")
+              }
             />
           ))}
         </div>
       );
     }
 
+    // -----------------------------------------------------------------------
+    // StatusBadge
+    // -----------------------------------------------------------------------
+
     function StatusBadge({ status }) {
+      const className = STATUS_STYLES[status] || STATUS_STYLES.PENDING;
+
       return (
         <span
-          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors duration-500 ${STATUS_STYLES[status]}`}
+          className={
+            "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors duration-500 " +
+            className
+          }
         >
           {status === "PENDING" && (
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-slate-400" />
@@ -90,26 +126,44 @@
       );
     }
 
+    // -----------------------------------------------------------------------
+    // CategoryBadge
+    // -----------------------------------------------------------------------
+
     function CategoryBadge({ category }) {
-      if (!category) return null;
+      if (!category) {
+        return <span className="text-xs text-slate-600">—</span>;
+      }
+
+      const className = CATEGORY_STYLES[category] || CATEGORY_STYLES.SPAM;
+
       return (
         <span
-          className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${CATEGORY_STYLES[category]}`}
+          className={
+            "inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide " +
+            className
+          }
         >
           {category}
         </span>
       );
     }
 
+    // -----------------------------------------------------------------------
+    // LeadRow
+    // -----------------------------------------------------------------------
+
     function LeadRow({ lead, style }) {
       const justClassified = lead.status === "CLASSIFIED" && lead._fresh;
+      const classification = lead.classification || null;
 
       return (
         <div
           style={style}
-          className={`absolute left-0 right-0 flex items-center gap-4 border-b border-slate-800/60 px-5 transition-colors duration-700 ${
-            justClassified ? "bg-emerald-500/5" : "bg-transparent"
-          }`}
+          className={
+            "absolute left-0 right-0 flex items-center gap-4 border-b border-slate-800/60 px-5 transition-colors duration-700 " +
+            (justClassified ? "bg-emerald-500/5" : "bg-transparent")
+          }
         >
           <div className="w-40 shrink-0">
             <p className="truncate text-sm font-medium text-slate-200">{lead.full_name}</p>
@@ -121,33 +175,39 @@
           </div>
 
           <div className="w-28 shrink-0">
-            <CategoryBadge category={lead.classification?.category} />
+            <CategoryBadge category={classification ? classification.category : null} />
           </div>
 
           <div className="w-32 shrink-0 text-sm text-slate-300">
-            {formatBudget(lead.classification?.estimated_budget_inr)}
+            {formatBudget(classification ? classification.estimated_budget_inr : null)}
           </div>
 
           <div className="w-36 shrink-0 truncate text-sm text-slate-400">
-            {lead.classification?.preferred_location ?? "—"}
+            {classification && classification.preferred_location ? classification.preferred_location : "—"}
           </div>
 
           <div className="w-24 shrink-0">
-            <UrgencyMeter score={lead.classification?.urgency_score} />
+            <UrgencyMeter score={classification ? classification.urgency_score : null} />
           </div>
 
           <div className="flex-1 truncate text-sm text-slate-400">
-            {lead.classification?.summary ?? (
+            {classification && classification.summary ? (
+              classification.summary
+            ) : (
               <span className="italic text-slate-600">Awaiting classification…</span>
             )}
+          </div>
+
+          <div className="w-16 shrink-0 text-right text-xs text-slate-600">
+            {formatTimestamp(lead.created_at)}
           </div>
         </div>
       );
     }
 
-    // ---------------------------------------------------------------------
-    // Virtualized list
-    // ---------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // VirtualizedLeadList
+    // -----------------------------------------------------------------------
 
     function VirtualizedLeadList({ leads }) {
       const containerRef = useRef(null);
@@ -156,16 +216,21 @@
 
       useEffect(() => {
         const node = containerRef.current;
-        if (!node) return;
+        if (!node) {
+          return;
+        }
+
         const resize = () => setViewportHeight(node.clientHeight);
         resize();
+
         const observer = new ResizeObserver(resize);
         observer.observe(node);
+
         return () => observer.disconnect();
       }, []);
 
-      const handleScroll = useCallback((e) => {
-        setScrollTop(e.currentTarget.scrollTop);
+      const handleScroll = useCallback((event) => {
+        setScrollTop(event.currentTarget.scrollTop);
       }, []);
 
       const totalHeight = leads.length * ROW_HEIGHT;
@@ -173,10 +238,9 @@
       const visibleCount = Math.ceil(viewportHeight / ROW_HEIGHT) + OVERSCAN * 2;
       const endIndex = Math.min(leads.length, startIndex + visibleCount);
 
-      const visibleRows = useMemo(
-        () => leads.slice(startIndex, endIndex),
-        [leads, startIndex, endIndex]
-      );
+      const visibleRows = useMemo(() => {
+        return leads.slice(startIndex, endIndex);
+      }, [leads, startIndex, endIndex]);
 
       return (
         <div
@@ -197,9 +261,9 @@
       );
     }
 
-    // ---------------------------------------------------------------------
-    // Ingestion panel
-    // ---------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // IngestPanel
+    // -----------------------------------------------------------------------
 
     function IngestPanel({ onSubmitted, connectionStatus }) {
       const [form, setForm] = useState({
@@ -211,43 +275,66 @@
       const [submitting, setSubmitting] = useState(false);
       const [error, setError] = useState(null);
 
-      const update = (field) => (e) =>
-        setForm((prev) => ({ ...prev, [field]: e.target.value }));
+      const update = (field) => (event) => {
+        const value = event.target.value;
+        setForm((prev) => ({ ...prev, [field]: value }));
+      };
 
-      const handleSubmit = async (e) => {
-        e.preventDefault();
+      const handleSubmit = async (event) => {
+        event.preventDefault();
         setSubmitting(true);
         setError(null);
+
         try {
-          const res = await fetch(API_URL, {
+          const response = await fetch(API_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...form, metadata: { source: "dashboard_demo" } }),
+            body: JSON.stringify({
+              full_name: form.full_name,
+              email: form.email,
+              phone: form.phone,
+              raw_inquiry_text: form.raw_inquiry_text,
+              metadata: { source: "dashboard_demo" },
+            }),
           });
-          if (!res.ok) throw new Error(`Request failed: ${res.status}`);
-          const created = await res.json();
+
+          if (!response.ok) {
+            throw new Error("Request failed with status " + response.status);
+          }
+
+          const created = await response.json();
           onSubmitted(created);
-          setForm({ full_name: "", email: "", phone: "", raw_inquiry_text: "" });
+
+          setForm({
+            full_name: "",
+            email: "",
+            phone: "",
+            raw_inquiry_text: "",
+          });
         } catch (err) {
-          setError(err.message);
+          setError(err.message || "Failed to submit inquiry.");
         } finally {
           setSubmitting(false);
         }
       };
+
+      const isConnected = connectionStatus === "connected";
 
       return (
         <div className="flex h-full flex-col gap-4 rounded-xl border border-slate-800 bg-slate-900/60 p-5">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-slate-200">Simulate Inquiry</h2>
             <span
-              className={`flex items-center gap-1.5 text-xs ${
-                connectionStatus === "connected" ? "text-emerald-400" : "text-slate-500"
-              }`}
+              className={
+                "flex items-center gap-1.5 text-xs " +
+                (isConnected ? "text-emerald-400" : "text-slate-500")
+              }
             >
               <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  connectionStatus === "connected" ? "bg-emerald-400" : "bg-slate-600"
-                }`}
+                className={
+                  "h-1.5 w-1.5 rounded-full " +
+                  (isConnected ? "bg-emerald-400" : "bg-slate-600")
+                }
               />
               {connectionStatus}
             </span>
@@ -261,6 +348,7 @@
               placeholder="Full name"
               className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 outline-none focus:border-emerald-500/50"
             />
+
             <input
               required
               type="email"
@@ -269,6 +357,7 @@
               placeholder="Email"
               className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 outline-none focus:border-emerald-500/50"
             />
+
             <input
               required
               value={form.phone}
@@ -276,12 +365,13 @@
               placeholder="Phone"
               className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 outline-none focus:border-emerald-500/50"
             />
+
             <textarea
               required
               value={form.raw_inquiry_text}
               onChange={update("raw_inquiry_text")}
-              placeholder="Raw inquiry text, e.g. 'Looking to invest in a 2BHK near Pune, budget around 80 lakhs, want to move fast.'"
-              rows={6}
+              placeholder="Looking to invest in a 2BHK near Pune, budget around 80 lakhs, want to move fast."
+              rows={7}
               className="flex-1 resize-none rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 placeholder-slate-600 outline-none focus:border-emerald-500/50"
             />
 
@@ -295,13 +385,19 @@
               {submitting ? "Ingesting…" : "Submit Inquiry"}
             </button>
           </form>
+
+          <p className="text-[11px] leading-relaxed text-slate-600">
+            Submitting persists the lead as <span className="text-slate-400">PENDING</span> and
+            schedules background AI classification. The row above updates live over the
+            WebSocket the instant classification completes — no refresh required.
+          </p>
         </div>
       );
     }
 
-    // ---------------------------------------------------------------------
-    // Root dashboard shell
-    // ---------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // CrmDashboard
+    // -----------------------------------------------------------------------
 
     function CrmDashboard() {
       const [leads, setLeads] = useState([]);
@@ -320,11 +416,13 @@
           let payload;
           try {
             payload = JSON.parse(event.data);
-          } catch {
+          } catch (err) {
             return;
           }
 
-          if (payload.event !== "lead_classified") return;
+          if (payload.event !== "lead_classified") {
+            return;
+          }
 
           setLeads((prev) =>
             prev.map((lead) =>
@@ -340,7 +438,9 @@
           );
         };
 
-        return () => socket.close();
+        return () => {
+          socket.close();
+        };
       }, []);
 
       const handleSubmitted = useCallback((createdLead) => {
@@ -349,9 +449,10 @@
 
       const stats = useMemo(() => {
         const total = leads.length;
-        const classified = leads.filter((l) => l.status === "CLASSIFIED").length;
-        const pending = total - classified;
-        return { total, classified, pending };
+        const classified = leads.filter((lead) => lead.status === "CLASSIFIED").length;
+        const failed = leads.filter((lead) => lead.status === "FAILED").length;
+        const pending = total - classified - failed;
+        return { total, classified, pending, failed };
       }, [leads]);
 
       return (
@@ -363,6 +464,7 @@
               </h1>
               <p className="text-xs text-slate-500">AI-Agentic Lead Intelligence Engine</p>
             </div>
+
             <div className="flex gap-6 text-sm">
               <div className="text-right">
                 <p className="text-xs text-slate-500">Total</p>
@@ -375,6 +477,10 @@
               <div className="text-right">
                 <p className="text-xs text-slate-500">Pending</p>
                 <p className="font-semibold text-slate-400">{stats.pending}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-slate-500">Failed</p>
+                <p className="font-semibold text-rose-400">{stats.failed}</p>
               </div>
             </div>
           </header>
@@ -389,12 +495,14 @@
                 <div className="w-36 shrink-0">Location</div>
                 <div className="w-24 shrink-0">Urgency</div>
                 <div className="flex-1">Summary</div>
+                <div className="w-16 shrink-0 text-right">Time</div>
               </div>
 
               <div className="flex-1 overflow-hidden">
                 {leads.length === 0 ? (
-                  <div className="flex h-full items-center justify-center text-sm text-slate-600">
-                    No leads yet — submit an inquiry to begin the demo.
+                  <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-slate-600">
+                    <span>No leads yet.</span>
+                    <span>Submit an inquiry from the panel to begin the demo.</span>
                   </div>
                 ) : (
                   <VirtualizedLeadList leads={leads} />
@@ -410,9 +518,9 @@
       );
     }
 
-    // ---------------------------------------------------------------------
+    // -----------------------------------------------------------------------
     // Mount
-    // ---------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
     const root = ReactDOM.createRoot(document.getElementById("root"));
     root.render(<CrmDashboard />);
