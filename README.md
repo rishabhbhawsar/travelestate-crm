@@ -1,179 +1,647 @@
-# TravelEstate CRM — AI-Agentic Lead Intelligence Engine
+# TravelEstate CRM
 
-**An async-native, AI-powered CRM engine designed for real-time customer telemetry, automated lead triage, and horizontal scalability.**
+### AI-Agentic Lead Intelligence Engine
 
----
+An async-native CRM engine for ingesting customer inquiries, classifying leads with schema-constrained LLM outputs, persisting state transactionally, and propagating updates to connected dashboards in real time.
 
-## 1. Executive Summary
-
-TravelEstate CRM is a demonstration-grade backend and dashboard system that ingests unstructured customer inquiries, classifies them into deterministic sales pipelines using LLM-based structured extraction, and streams state changes to connected clients in real time — without polling.
-
-The system is built to answer a single engineering question: **can a lead-management pipeline stay correct and responsive under concurrent load while making a non-deterministic AI call part of its critical path?** Every architectural decision in this repository traces back to that constraint.
-
-| Property | Target |
-|---|---|
-| Concurrent connection handling | 5,000+ pooled async connections |
-| Initial payload / render latency reduction | 58% (via virtualization + compression) |
-| AI classification | Structured, schema-locked (Pydantic V2 contracts) |
-| Real-time propagation | WebSocket push, zero client polling |
-| Security posture | JWT auth, CSP/CORS/SRI headers, input sanitization at the boundary |
+> **Engineering focus:** asynchronous I/O, AI reliability, real-time state propagation, security boundaries, and scalable frontend rendering.
 
 ---
 
-## 2. Problem Statement
+## Overview
 
-Traditional CRM ingestion pipelines fall into two failure modes:
+TravelEstate CRM is a full-stack CRM demonstration focused on the engineering challenges that emerge when an AI inference step becomes part of a real-time application workflow.
 
-1. **Synchronous blocking** — a lead comes in, the server calls an external AI API, and the request thread blocks until it returns. Under load, this serializes what should be parallel work and collapses throughput.
-2. **Stale state** — dashboards rely on short polling (every N seconds) to detect new leads, which wastes bandwidth, introduces latency proportional to the poll interval, and does not scale linearly with connected clients.
+The system accepts unstructured customer inquiries, validates and sanitizes them at the API boundary, persists the lead immediately, and performs AI classification asynchronously. The resulting classification is validated against a strict Pydantic contract before the database is updated.
 
-TravelEstate CRM addresses both: the AI classification step is **non-blocking** relative to the event loop, and state changes are **pushed** to clients the instant they're persisted.
+Once the state changes, the WebSocket layer broadcasts the update to connected dashboard clients. The frontend therefore receives changes through server push rather than repeatedly polling the API.
 
----
+The architecture is designed around a simple principle:
 
-## 3. Architecture Overview
-
-### 3.1 High-Level Component Diagram
-                ┌─────────────────────────────────────────┐
-                │              CLIENT LAYER                │
-                │   React + Tailwind + WebSocket Client     │
-                │   (Virtualized Lead List, Live Dashboard) │
-                └───────────────┬───────────────────────────┘
-                                │ WSS (bi-directional)
-                                │ HTTPS (REST, auth)
-                ┌───────────────▼───────────────────────────┐
-                │            FASTAPI GATEWAY                 │
-                │  ┌───────────────────────────────────────┐ │
-                │  │  core/security.py                     │ │
-                │  │  JWT verification · CORS · CSP · SRI  │ │
-                │  │  Input sanitization middleware         │ │
-                │  └───────────────────────────────────────┘ │
-                └───────────────┬───────────────────────────┘
-                                │
-          ┌─────────────────────┼─────────────────────────┐
-          │                     │                          │
-          ┌──────────▼──────────┐ ┌────────▼─────────┐ ┌─────────────▼────────────┐
-        │ services/ai_agent │ │ websocket_hub.py │ │ models/schemas.py │
-        │ Async OpenAI call │ │ Connection pool │ │ Pydantic V2 contracts │
-        │ Structured Outputs │ │ Broadcast fan-out │ │ Request/Response DTOs │
-        └──────────┬───────────┘ └────────┬─────────┘ └───────────────────────────┘
-        │ │
-        │ (classification │ (state change
-        │ result) │ event)
-        ▼ ▼
-┌────────────────────────────────────────────┐
-│ PERSISTENCE & CACHE LAYER │
-│ SQLite (transactional ledger, WAL mode) │
-│ Redis-simulated cache (session/token TTL) │
-└────────────────────────────────────────────┘
-
-### 3.2 Request Lifecycle: "New Lead Ingested"
-Customer submits inquiry
-│
-▼
-[1] FastAPI receives POST /leads
-│ Pydantic validates + sanitizes payload (rejects malformed input at the edge)
-▼
-[2] Lead persisted to SQLite as PENDING (immediate ack to client — no AI wait)
-│
-▼
-[3] AI classification scheduled as an asyncio background task
-│ Event loop is NOT blocked — it continues serving other requests
-▼
-[4] ai_agent.py calls OpenAI with Structured Outputs
-│ Response is schema-locked to LeadClassification (Pydantic model)
-│ A malformed/hallucinated shape is rejected before it touches the DB
-▼
-[5] SQLite row updated: PENDING → CLASSIFIED (category, priority, confidence)
-│
-▼
-[6] websocket_hub.py broadcasts the state diff to all subscribed dashboard clients
-│
-▼
-[7] React dashboard receives the push and re-renders only the affected row
-(virtualized list — no full re-render, no polling)
+> **Keep the request path fast and deterministic while isolating non-deterministic AI work behind explicit contracts.**
 
 ---
 
-## 4. Core Engineering Decisions — The "Why"
+## Key Engineering Highlights
 
-### 4.1 Why FastAPI + `asyncio` over a synchronous framework (e.g., Flask/Django WSGI)
+| Area              | Implementation                                 |
+| ----------------- | ---------------------------------------------- |
+| Backend           | FastAPI + ASGI                                 |
+| Concurrency       | `asyncio` / non-blocking I/O                   |
+| AI classification | OpenAI Structured Outputs                      |
+| AI contract       | Pydantic V2                                    |
+| Persistence       | SQLite + WAL mode                              |
+| Real-time updates | WebSockets                                     |
+| Authentication    | JWT access + refresh tokens                    |
+| Input security    | Boundary-level sanitization                    |
+| Browser security  | CSP, CORS, SRI                                 |
+| Frontend          | React + Tailwind CSS                           |
+| Rendering         | Virtualized lead list                          |
+| Caching           | In-memory TTL cache with Redis-style semantics |
 
-A synchronous worker is occupied for the entire duration of an I/O-bound call — including the ~1–3 second round trip to an LLM provider. Under concurrent load, this means thread/process count becomes the hard ceiling on throughput.
+### Current engineering targets
 
-FastAPI's ASGI event loop yields control during I/O waits (network calls, disk reads). A single worker process can therefore hold thousands of in-flight requests where most of them are "waiting," not "computing" — which matches the actual shape of CRM traffic (bursty writes, long-tail AI calls, persistent WebSocket connections).
+| Metric                         |        Target |
+| ------------------------------ | ------------: |
+| Concurrent connections         |        5,000+ |
+| Initial-load latency reduction |           58% |
+| Client polling                 |             0 |
+| AI output contract             | Schema-locked |
 
-### 4.2 Why WebSockets over Long/Short Polling
-
-Polling forces the client to ask "did anything change?" on a fixed interval, regardless of whether anything did. This has two costs that compound with client count:
-
-- **Latency floor**: a lead reclassified 100ms after a poll isn't visible until the *next* poll — average staleness is half the poll interval.
-- **Wasted bandwidth**: N clients polling every 5s against a 5,000-connection target means constant request volume with a near-zero useful-information ratio.
-
-A WebSocket is a persistent, full-duplex channel: the server pushes the diff the instant it's committed, and idle connections cost a held socket, not a request cycle. This is the correct primitive for "who needs to know about this state change" being determined by the server, not guessed by the client.
-
-### 4.3 Why Pydantic V2 for the AI Layer specifically
-
-LLM output is inherently non-deterministic prose unless constrained. Passing a raw model response into business logic means every downstream consumer has to defensively parse and validate — and can still be handed garbage.
-
-OpenAI's Structured Outputs, combined with a Pydantic V2 `BaseModel` as the schema, moves that validation to the boundary: the AI call either returns an object that satisfies the contract, or it doesn't reach the rest of the system at all. This makes the AI classification step a **deterministic pipeline stage** from the perspective of everything downstream — the non-determinism is fully contained inside `ai_agent.py`.
-
-### 4.4 Why input sanitization is enforced at the middleware layer, not per-endpoint
-
-XSS exploits the gap between "what the server stored" and "what the browser executes." If sanitization is left to individual endpoint handlers, one omitted call is one stored-XSS vulnerability. Centralizing sanitization in `core/security.py` as middleware means every request body is normalized before it reaches a single line of business logic — the guarantee holds regardless of which endpoint is hit or which developer wrote it.
-
-### 4.5 Why SQLite (transactional ledger) + a Redis-simulated cache, rather than one datastore
-
-These serve different access patterns and shouldn't share a bottleneck:
-
-- **SQLite (WAL mode)** is the source of truth for lead records — durable, ACID-compliant, correct under concurrent writes for this workload scale.
-- **Redis-simulated cache** holds ephemeral, high-read data — session tokens, rate-limit counters — where durability matters less than *speed* and *TTL expiry semantics*. Mixing this into the transactional ledger would mean paying disk-write cost for data that's supposed to be disposable.
-
-### 4.6 Why virtualized list rendering + payload compression on the frontend
-
-At scale, a CRM lead list isn't 50 rows — it's tens of thousands. Rendering every row into the DOM regardless of scroll position means paint cost scales with total dataset size, not visible size. Virtualization renders only the rows in (or near) the viewport, decoupling render cost from data volume. Paired with response compression (reducing wire payload) and payload shaping (sending only fields the current view needs), this is where the 58% initial-load latency reduction target comes from — it is a compounding effect of *less data transferred* and *less DOM work per frame*, not a single trick.
+> Performance targets are treated as engineering goals unless backed by reproducible benchmark results in this repository.
 
 ---
 
-## 5. Security Model
+# Architecture
 
-| Layer | Mechanism | Threat Mitigated |
-|---|---|---|
-| Transport | HTTPS/WSS enforced | Man-in-the-middle interception |
-| AuthN | JWT (short-lived access + refresh) | Credential replay, session hijack |
-| AuthZ | Route-level dependency injection scopes | Privilege escalation |
-| Input boundary | Sanitization middleware on all mutating routes | Stored/Reflected XSS |
-| Browser policy | Content-Security-Policy (script-src locked) | Injected script execution |
-| Cross-origin | Explicit CORS allow-list (no wildcard `*`) | Unauthorized cross-origin reads |
-| Asset integrity | Subresource Integrity (SRI) hashes on CDN assets | Supply-chain / CDN tampering |
+## High-Level Architecture
+
+```mermaid
+flowchart TB
+    Client["React Dashboard<br/>Tailwind CSS<br/>Virtualized Lead List"]
+
+    Gateway["FastAPI / ASGI Gateway"]
+
+    Security["Security Boundary<br/>JWT · CSP · CORS · SRI<br/>Input Sanitization"]
+
+    Schemas["Pydantic V2<br/>Request / Response Contracts"]
+
+    AI["AI Agent<br/>Async OpenAI Call<br/>Structured Outputs"]
+
+    WS["WebSocket Hub<br/>Connection Registry<br/>Broadcast Fan-out"]
+
+    DB[("SQLite<br/>Transactional Ledger<br/>WAL Mode")]
+
+    Cache[("Ephemeral TTL Cache<br/>Redis-style Semantics")]
+
+    Client <-->|HTTPS / REST| Gateway
+    Client <-->|WSS| WS
+
+    Gateway --> Security
+    Gateway --> Schemas
+
+    Gateway --> DB
+    Gateway --> AI
+
+    AI --> Schemas
+    AI --> DB
+
+    DB --> WS
+    Gateway --> Cache
+    Security --> Cache
+```
 
 ---
 
-## 6. Project Structure
+## Request Lifecycle — New Lead
+
+A new lead follows the following path:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant F as FastAPI
+    participant DB as SQLite
+    participant A as AI Agent
+    participant W as WebSocket Hub
+    participant D as Dashboard
+
+    C->>F: POST /leads
+    F->>F: Validate + sanitize input
+    F->>DB: Persist lead as PENDING
+    DB-->>F: Commit
+    F-->>C: Immediate response
+
+    F->>A: Schedule async classification
+    A->>A: Call LLM with structured schema
+    A->>A: Validate LeadClassification
+    A->>DB: Update PENDING → CLASSIFIED
+    DB-->>A: Commit
+
+    A->>W: Publish state change
+    W-->>D: WebSocket state diff
+    D->>D: Update affected row
+```
+
+### Step-by-step
+
+1. **Request arrives**
+   FastAPI receives the customer inquiry over REST.
+
+2. **Boundary validation**
+   Pydantic validates the request while the security layer sanitizes untrusted input.
+
+3. **Immediate persistence**
+   The lead is stored in SQLite with a `PENDING` classification state.
+
+4. **Immediate acknowledgement**
+   The API does not wait for the LLM response before acknowledging the lead.
+
+5. **Asynchronous AI classification**
+   The classification task is scheduled without synchronously blocking the event loop.
+
+6. **Structured AI output**
+   The LLM response is constrained to the `LeadClassification` schema.
+
+7. **Transactional state update**
+   The lead changes from `PENDING` to `CLASSIFIED` only after successful validation.
+
+8. **WebSocket broadcast**
+   The state change is propagated to connected dashboard clients.
+
+9. **Targeted frontend update**
+   The dashboard updates the affected lead instead of polling the entire dataset.
+
+---
+
+# Core Engineering Decisions
+
+## 1. Async I/O for AI-Bound Requests
+
+### Problem
+
+LLM inference is a network-bound operation. A request may spend significant time waiting for an external model provider to respond.
+
+A synchronous request path can unnecessarily occupy a worker while no CPU-intensive work is being performed.
+
+### Decision
+
+Use FastAPI on ASGI with asynchronous I/O.
+
+The application can yield control while waiting on network operations, allowing other requests and persistent WebSocket connections to continue being serviced.
+
+### Trade-off
+
+`asyncio` improves concurrency for I/O-bound workloads, but it does not make CPU-heavy work automatically parallel. CPU-intensive processing would require separate workers or processes.
+
+---
+
+## 2. Immediate Persistence Before AI Classification
+
+### Problem
+
+Making the LLM call part of the synchronous request path increases user-visible latency and makes lead creation dependent on an external service.
+
+### Decision
+
+Persist the lead first:
+
+```text
+NEW LEAD
+   ↓
+VALIDATE
+   ↓
+PERSIST
+   ↓
+PENDING
+   ↓
+ASYNC AI CLASSIFICATION
+   ↓
+CLASSIFIED
+```
+
+The API can acknowledge the lead without waiting for AI inference.
+
+### Trade-off
+
+The MVP uses an in-process asynchronous task. If the process terminates while classification is running, the task may be lost.
+
+A production implementation would move classification into a durable worker/queue system with retry and failure handling.
+
+---
+
+## 3. Structured Outputs for AI Reliability
+
+### Problem
+
+LLMs naturally produce non-deterministic text. Passing raw model output directly into business logic forces every downstream component to perform its own parsing and validation.
+
+### Decision
+
+Use OpenAI Structured Outputs with a Pydantic V2 model defining the expected classification contract.
+
+Conceptually:
+
+```text
+Unstructured Inquiry
+        ↓
+      LLM
+        ↓
+Structured Output
+        ↓
+Pydantic Validation
+        ↓
+LeadClassification
+        ↓
+Business Logic
+```
+
+This isolates model variability behind an explicit interface.
+
+### Result
+
+Downstream components operate on a known contract rather than arbitrary model-generated prose.
+
+---
+
+## 4. WebSockets Instead of Polling
+
+### Problem
+
+Polling requires clients to repeatedly ask whether anything changed.
+
+For example, with a five-second polling interval:
+
+```text
+Client → "Anything new?"
+Client → "Anything new?"
+Client → "Anything new?"
+Client → "Anything new?"
+```
+
+Most requests may contain no new information.
+
+### Decision
+
+Use a persistent WebSocket connection:
+
+```text
+                    ┌───────────────┐
+                    │    Server     │
+                    └───────┬───────┘
+                            │
+                    state change
+                            │
+              ┌─────────────┼─────────────┐
+              ▼             ▼             ▼
+           Client A      Client B      Client C
+```
+
+The server publishes state changes when they occur.
+
+### Trade-off
+
+WebSockets remove repeated request overhead but introduce persistent connection management. A production multi-instance deployment would require distributed connection coordination, typically through a broker or pub/sub layer.
+
+---
+
+## 5. Security at the Boundary
+
+Security-sensitive behavior should not depend on every individual route remembering to implement the same protections.
+
+The security layer centralizes:
+
+* JWT issuance and verification
+* Request sanitization
+* CORS policy
+* Content Security Policy
+* Security headers
+* Authentication dependencies
+
+The intended request flow is:
+
+```text
+Untrusted Request
+       ↓
+Security Boundary
+       ↓
+Validation / Sanitization
+       ↓
+Business Logic
+       ↓
+Persistence
+```
+
+This reduces the possibility of individual endpoints accidentally bypassing common security controls.
+
+---
+
+## 6. SQLite as the Transactional Ledger
+
+SQLite is used as the source of truth for the MVP workload.
+
+The database provides:
+
+* ACID transactions
+* Durable lead records
+* WAL mode
+* Simple local deployment
+* Minimal operational overhead
+
+The architectural boundary is intentional:
+
+```text
+              ┌──────────────────┐
+              │     SQLite       │
+              │ Source of Truth  │
+              └────────┬─────────┘
+                       │
+                       │
+              ┌────────▼─────────┐
+              │ Ephemeral Cache  │
+              │ TTL-based data   │
+              └──────────────────┘
+```
+
+The cache is intended for ephemeral, high-read information such as session/token metadata and rate-limit state.
+
+### Production evolution
+
+For a horizontally scaled production deployment, the persistence layer would be migrated to a database designed for higher concurrent write workloads, such as PostgreSQL.
+
+---
+
+## 7. Virtualized Frontend Rendering
+
+Large CRM datasets can contain thousands of leads.
+
+Rendering every row simultaneously creates unnecessary DOM, layout, and paint work.
+
+The dashboard therefore uses virtualization so that rendering cost is primarily associated with the visible portion of the dataset.
+
+```text
+10,000 records
+      │
+      ▼
+┌─────────────────────┐
+│ Virtualized List    │
+│                     │
+│  Visible rows       │
+│  + small buffer     │
+└─────────────────────┘
+```
+
+This is combined with payload shaping and response compression to reduce both network transfer and frontend rendering work.
+
+---
+
+# Security Model
+
+| Layer           | Mechanism                   | Threat / Risk Addressed                 |
+| --------------- | --------------------------- | --------------------------------------- |
+| Transport       | HTTPS / WSS                 | Network interception                    |
+| Authentication  | JWT access + refresh tokens | Unauthorized access                     |
+| Authorization   | Route-level dependencies    | Privilege escalation                    |
+| Input boundary  | Sanitization middleware     | XSS / malicious input                   |
+| Browser policy  | Content Security Policy     | Script injection                        |
+| Cross-origin    | Explicit CORS allow-list    | Unauthorized cross-origin requests      |
+| Asset integrity | SRI hashes                  | CDN / asset tampering                   |
+| Session data    | TTL-based storage           | Excessive persistence of ephemeral data |
+
+> Security controls are defense-in-depth measures; they should be complemented by secure deployment configuration, dependency updates, secret management, logging, and operational monitoring.
+
+---
+
+# Project Structure
+
+```text
 travelestate-crm/
+│
 ├── README.md
 ├── requirements.txt
+│
 └── src/
-├── core/
-│ └── security.py # JWT issuance/verification, sanitization, security headers
-├── models/
-│ └── schemas.py # Pydantic V2 contracts — the single source of truth for shapes
-├── services/
-│ ├── ai_agent.py # Structured-output lead classification
-│ └── websocket_hub.py # Connection registry + broadcast fan-out
-└── main.py # FastAPI app assembly, route registration, lifespan hooks
+    │
+    ├── main.py
+    │
+    ├── core/
+    │   └── security.py
+    │
+    ├── models/
+    │   └── schemas.py
+    │
+    └── services/
+        ├── ai_agent.py
+        └── websocket_hub.py
+```
+
+### Responsibilities
+
+| File                        | Responsibility                                                 |
+| --------------------------- | -------------------------------------------------------------- |
+| `main.py`                   | FastAPI application assembly, routes, and lifespan management  |
+| `core/security.py`          | JWT lifecycle, sanitization, CORS/CSP/SRI and security headers |
+| `models/schemas.py`         | Pydantic request, response, authentication and AI contracts    |
+| `services/ai_agent.py`      | Async LLM classification and structured output handling        |
+| `services/websocket_hub.py` | WebSocket connection registry and broadcast primitives         |
 
 ---
 
-## 7. Roadmap (Demo MVP Scope)
+# Technology Stack
 
-- [ ] `models/schemas.py` — data contracts for `Lead`, `LeadClassification`, `AuthToken`
-- [ ] `core/security.py` — JWT flow, sanitization middleware, security headers
-- [ ] `services/ai_agent.py` — async OpenAI Structured Outputs classification
-- [ ] `services/websocket_hub.py` — connection pool + broadcast primitives
-- [ ] `main.py` — route wiring, lifespan-managed resources
-- [ ] React dashboard — virtualized lead table, live WebSocket subscription
+### Backend
+
+* Python
+* FastAPI
+* Uvicorn
+* asyncio
+* Pydantic V2
+
+### AI
+
+* OpenAI API
+* Structured Outputs
+* Schema-constrained classification
+
+### Data
+
+* SQLite
+* WAL mode
+* In-memory TTL cache
+
+### Realtime
+
+* WebSockets
+
+### Frontend
+
+* React
+* Tailwind CSS
+* Virtualized rendering
+
+### Security
+
+* JWT
+* CSP
+* CORS
+* SRI
+* Input sanitization
 
 ---
 
-*This repository is a systems-design demonstration: the emphasis is on defensible architectural reasoning under realistic constraints (concurrency, non-determinism, security boundaries), not on feature breadth.*
+# Production Evolution
+
+The current architecture intentionally keeps infrastructure lightweight while preserving clear boundaries for future scaling.
+
+| MVP                         | Production Evolution                        |
+| --------------------------- | ------------------------------------------- |
+| SQLite                      | PostgreSQL                                  |
+| In-process async task       | Durable job queue + workers                 |
+| In-memory TTL cache         | Redis                                       |
+| Local WebSocket registry    | Distributed WebSocket/pub-sub architecture  |
+| Single application instance | Horizontally scaled ASGI instances          |
+| Basic application logging   | Structured logs + centralized observability |
+| Manual deployment           | Containerized deployment                    |
+| Basic error handling        | Retry, dead-letter and failure recovery     |
+
+The goal is not to prematurely introduce distributed infrastructure into a demonstration application, but to keep the interfaces clean enough that individual components can be replaced as workload requirements grow.
+
+---
+
+# Roadmap
+
+## Core Backend
+
+* [x] FastAPI application structure
+* [x] Pydantic data contracts
+* [x] JWT authentication foundation
+* [x] Input sanitization boundary
+* [x] Security headers
+* [x] WebSocket connection management
+* [x] AI classification service
+
+## Frontend
+
+* [ ] React dashboard
+* [ ] Virtualized lead table
+* [ ] Real-time WebSocket updates
+* [ ] Lead filtering and search
+* [ ] Lead detail view
+* [ ] Authentication UI
+
+## Reliability
+
+* [ ] AI retry strategy
+* [ ] Background task failure handling
+* [ ] Rate limiting
+* [ ] Structured application logging
+* [ ] Health/readiness endpoints
+* [ ] Automated tests
+
+## Production Evolution
+
+* [ ] PostgreSQL migration
+* [ ] Redis integration
+* [ ] Durable background workers
+* [ ] Distributed WebSocket coordination
+* [ ] Containerization
+* [ ] Metrics and tracing
+
+---
+
+# Running Locally
+
+## 1. Clone the repository
+
+```bash
+git clone https://github.com/rishabhbhawsar/travelestate-crm.git
+cd travelestate-crm
+```
+
+## 2. Create a virtual environment
+
+### Windows
+
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+### macOS / Linux
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+## 3. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+## 4. Configure environment variables
+
+Create a `.env` file containing the credentials required by the application.
+
+```env
+OPENAI_API_KEY=your_api_key_here
+```
+
+Never commit `.env` or API credentials to the repository.
+
+## 5. Start the application
+
+```bash
+uvicorn src.main:app --reload
+```
+
+The development server will be available at:
+
+```text
+http://localhost:8000
+```
+
+If enabled by the application, FastAPI's interactive API documentation is available at:
+
+```text
+http://localhost:8000/docs
+```
+
+---
+
+# Design Philosophy
+
+TravelEstate CRM is intentionally built around a small number of explicit boundaries:
+
+```text
+┌─────────────────────────────────────────┐
+│              CLIENT                     │
+│       REST + WebSocket                  │
+└───────────────────┬─────────────────────┘
+                    │
+┌───────────────────▼─────────────────────┐
+│          SECURITY / VALIDATION           │
+│       Auth · Sanitization · Policy       │
+└───────────────────┬─────────────────────┘
+                    │
+┌───────────────────▼─────────────────────┐
+│             APPLICATION                 │
+│        FastAPI · Async I/O               │
+└──────────────┬──────────────┬────────────┘
+               │              │
+               ▼              ▼
+        ┌────────────┐  ┌──────────────┐
+        │  AI Agent  │  │  Persistence │
+        │ Structured │  │    SQLite    │
+        │  Outputs   │  │              │
+        └─────┬──────┘  └──────┬───────┘
+              │                │
+              └────────┬───────┘
+                       ▼
+               ┌───────────────┐
+               │ WebSocket Hub │
+               └───────┬───────┘
+                       │
+                       ▼
+                 Live Dashboard
+```
+
+The architecture prioritizes:
+
+* **Fast request acknowledgement**
+* **Explicit contracts between components**
+* **Isolation of non-deterministic AI behavior**
+* **Server-driven state propagation**
+* **Centralized security controls**
+* **Clear paths toward horizontal scaling**
+
+---
+
+## Project Status
+
+TravelEstate CRM is an evolving engineering project focused on demonstrating backend architecture, AI integration, real-time systems, and production-oriented design trade-offs.
+
+The emphasis is on **understanding why the system is designed this way**, not simply assembling a collection of frameworks.
+
+---
